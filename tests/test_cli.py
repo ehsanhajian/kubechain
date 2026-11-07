@@ -124,3 +124,152 @@ def test_brief_line() -> None:
     result = _run("check", "--manifests", "examples/ready", "--brief")
     assert result.returncode == 0
     assert result.stdout == "namespace nodes verdict ready\n"
+
+
+def test_yaml_and_json_are_one_report(tmp_path: Path) -> None:
+    (tmp_path / "stack.yaml").write_text(
+        """\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: nodes
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpc
+  namespace: nodes
+spec:
+  ports:
+    - port: 8545
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jwt-secret
+  namespace: nodes
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: nodes
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: proxy
+          image: nginx:1.27.0
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: unused
+  namespace: nodes
+spec:
+  replicas: 0
+  serviceName: missing
+  selector:
+    matchLabels:
+      app: unused
+  template:
+    metadata:
+      labels:
+        app: unused
+    spec:
+      containers:
+        - name: geth
+          image: ethereum/client-go:v1.15.11
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: unused
+  namespace: nodes
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: unused
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: unused
+  namespace: nodes
+spec:
+  podSelector:
+    matchLabels:
+      app: unused
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+provisioner: kubernetes.io/no-provisioner
+"""
+    )
+    (tmp_path / "claim.json").write_text(
+        json.dumps(
+            {
+                "apiVersion": "v1",
+                "kind": "PersistentVolumeClaim",
+                "metadata": {"name": "data-unused-0", "namespace": "nodes"},
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "resources": {"requests": {"storage": "10Gi"}},
+                },
+            }
+        )
+    )
+    result = _run("check", "--manifests", str(tmp_path), "--json")
+    assert result.returncode in {0, 1, 2}, result.stdout + result.stderr
+    document = json.loads(result.stdout)
+    assert document["objects"] == [
+        "ConfigMap/settings",
+        "Deployment/proxy",
+        "NetworkPolicy/unused",
+        "PersistentVolumeClaim/data-unused-0",
+        "PodDisruptionBudget/unused",
+        "Secret/jwt-secret",
+        "Service/rpc",
+        "StatefulSet/unused",
+        "StorageClass/fast",
+    ]
+    assert "critical statefulset-zero-replicas unused" not in result.stdout
+    assert any(finding["id"] == "statefulset-zero-replicas" for finding in document["findings"])
+
+
+def test_review_exits_1(tmp_path: Path) -> None:
+    (tmp_path / "proxy.yaml").write_text(
+        """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: nodes
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    spec:
+      containers:
+        - name: proxy
+          image: nginx:1.27.0
+"""
+    )
+    result = _run("check", "--manifests", str(tmp_path))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "warning deployment-max-unavailable proxy" in result.stdout
+    assert "critical " not in result.stdout
+
+
+def test_manifest_read_does_not_shell_out() -> None:
+    source = "\n".join(path.read_text() for path in (ROOT / "src" / "kubechain").glob("*.py"))
+    assert "kubectl" not in source
+    assert "subprocess" not in source
