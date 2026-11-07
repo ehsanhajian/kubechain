@@ -1,0 +1,12 @@
+{
+  "comm": "geth",
+  "p2p_ports": [30303],
+  "rpc_ports": [8545, 8546],
+  "engine_port": 8551,
+  "jwt": true,
+  "data_volume": "data",
+  "cpu": "2",
+  "memory": "8Gi",
+  "storage": "100Gi",
+  "grace_seconds": 300
+}

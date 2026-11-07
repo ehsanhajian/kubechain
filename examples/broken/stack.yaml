@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jwt-secret
+  namespace: nodes
+type: Opaque
+data:
+  jwtsecret: ZXhhbXBsZS1zZWNyZXQtdmFsdWU=
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keys
+  namespace: nodes
+data:
+  keystore: not-a-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: geth
+  namespace: nodes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: geth
+  template:
+    metadata:
+      labels:
+        app: geth
+    spec:
+      containers:
+        - name: geth
+          image: ethereum/client-go:latest
+          env:
+            - name: JWT_SECRET
+              value: example-secret-value
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: geth-engine
+  namespace: nodes
+spec:
+  type: LoadBalancer
+  selector:
+    app: geth
+  ports:
+    - name: engine
+      port: 8551
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: erigon
+  namespace: nodes
+spec:
+  replicas: 0
+  serviceName: ""
+  selector:
+    matchLabels:
+      app: erigon
+  template:
+    metadata:
+      labels:
+        app: erigon
+    spec:
+      containers:
+        - name: erigon
+          image: thorax/erigon:latest
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/lib/erigon
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteMany"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nethermind
+  namespace: nodes
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: nethermind
+  template:
+    metadata:
+      labels:
+        app: nethermind
+    spec:
+      containers:
+        - name: nethermind
+          image: nethermind/nethermind:latest
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: open-engine
+  namespace: nodes
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: 8551

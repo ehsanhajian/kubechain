@@ -1,0 +1,42 @@
+# Namespace-scoped read for `kubechain check --namespace`.
+# KubeChain does not apply this file.
+# Listing a Secret returns its bytes from the API. The CLI discards them.
+# StorageClass is cluster-scoped. A live read of binding mode and expansion
+# needs get, list, and watch on storageclasses.storage.k8s.io in a ClusterRole.
+# Kubelet volume stats need get on nodes/proxy, which is also cluster-scoped.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubechain-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "secrets", "configmaps", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["velero.io"]
+    resources: ["backups", "schedules"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubechain-reader
+subjects:
+  - kind: ServiceAccount
+    name: kubechain
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubechain-reader

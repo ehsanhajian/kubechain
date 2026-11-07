@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: geth-0
+  namespace: nodes
+spec:
+  containers:
+    - name: geth
+      image: ethereum/client-go:v1.15.11
+status:
+  containerStatuses:
+    - name: geth
+      restartCount: 4
+      state:
+        waiting:
+          reason: CrashLoopBackOff
+      lastState:
+        terminated:
+          reason: OOMKilled

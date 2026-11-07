@@ -1,0 +1,262 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jwt-secret
+  namespace: nodes
+type: Opaque
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: geth
+  namespace: nodes
+spec:
+  clusterIP: "None"
+  selector:
+    app: geth
+  ports:
+    - name: p2p
+      port: 30303
+    - name: engine
+      port: 8551
+    - name: rpc
+      port: 8545
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lighthouse
+  namespace: nodes
+spec:
+  clusterIP: "None"
+  selector:
+    app: lighthouse
+  ports:
+    - name: p2p
+      port: 9000
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: geth
+  namespace: nodes
+spec:
+  serviceName: geth
+  replicas: 2
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  selector:
+    matchLabels:
+      app: geth
+  template:
+    metadata:
+      labels:
+        app: geth
+    spec:
+      terminationGracePeriodSeconds: 300
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: geth
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: geth
+          image: ethereum/client-go:v1.15.11
+          args: ["--authrpc.addr=0.0.0.0", "--authrpc.port=8551"]
+          ports:
+            - containerPort: 30303
+            - containerPort: 8545
+            - containerPort: 8551
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "2"
+              memory: 8Gi
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8545
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8545
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 6060
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "kill -TERM 1"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: jwt
+              mountPath: /secrets/jwt
+              readOnly: true
+      volumes:
+        - name: jwt
+          secret:
+            secretName: jwt-secret
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations:
+          kubechain.io/backup: "runbook: nodes/geth"
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: fast
+        resources:
+          requests:
+            storage: 200Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lighthouse
+  namespace: nodes
+spec:
+  serviceName: lighthouse
+  replicas: 2
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  selector:
+    matchLabels:
+      app: lighthouse
+  template:
+    metadata:
+      labels:
+        app: lighthouse
+    spec:
+      terminationGracePeriodSeconds: 120
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: lighthouse
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: lighthouse
+          image: sigp/lighthouse:v7.0.1
+          args: ["--execution-endpoint=http://geth:8551", "--execution-jwt=/secrets/jwt"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 5052
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 5054
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "kill -TERM 1"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: jwt
+              mountPath: /secrets/jwt
+              readOnly: true
+      volumes:
+        - name: jwt
+          secret:
+            secretName: jwt-secret
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        annotations:
+          kubechain.io/backup: "runbook: nodes/lighthouse"
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: fast
+        resources:
+          requests:
+            storage: 100Gi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: geth
+  namespace: nodes
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: geth
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: lighthouse
+  namespace: nodes
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: lighthouse
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: geth
+  namespace: nodes
+spec:
+  podSelector:
+    matchLabels:
+      app: geth
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: 30303
+      from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+    - ports:
+        - port: 8551
+      from:
+        - podSelector:
+            matchLabels:
+              app: lighthouse
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lighthouse
+  namespace: nodes
+spec:
+  podSelector:
+    matchLabels:
+      app: lighthouse
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: 9000
+      from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
