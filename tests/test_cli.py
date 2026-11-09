@@ -126,6 +126,59 @@ def test_brief_line() -> None:
     assert result.stdout == "namespace nodes verdict ready\n"
 
 
+_EXIT = {"ready": 0, "review": 1, "not-ready": 2}
+
+
+def _assert_output_formats(manifests: str) -> None:
+    default = _run("check", "--manifests", manifests)
+    brief = _run("check", "--manifests", manifests, "--brief")
+    as_json = _run("check", "--manifests", manifests, "--json")
+    both = _run("check", "--manifests", manifests, "--brief", "--json")
+    document = json.loads(as_json.stdout)
+    verdict = document["verdict"]
+    code = _EXIT[verdict]
+    assert default.returncode == brief.returncode == as_json.returncode == both.returncode == code
+    assert default.stdout.startswith("verdict ")
+    assert not default.stdout.lstrip().startswith("{")
+    assert brief.stdout == f"namespace {document['namespace']} verdict {verdict}\n"
+    assert {"verdict", "objects", "findings"} <= set(document)
+    assert isinstance(document["objects"], list)
+    assert isinstance(document["findings"], list)
+    assert json.loads(both.stdout) == document
+    assert not both.stdout.startswith("namespace ")
+
+
+def test_json_and_brief_keep_the_exit_code(tmp_path: Path) -> None:
+    _assert_output_formats("examples/ready")
+    _assert_output_formats("examples/broken")
+    (tmp_path / "proxy.yaml").write_text(
+        """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: nodes
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    spec:
+      containers:
+        - name: proxy
+          image: nginx:1.27.0
+"""
+    )
+    _assert_output_formats(str(tmp_path))
+    seen = set()
+    for manifests in ("examples/ready", "examples/broken", str(tmp_path)):
+        document = json.loads(_run("check", "--manifests", manifests, "--json").stdout)
+        seen.add(document["verdict"])
+    assert seen == {"ready", "review", "not-ready"}
+
+
 def test_yaml_and_json_are_one_report(tmp_path: Path) -> None:
     (tmp_path / "stack.yaml").write_text(
         """\
