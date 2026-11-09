@@ -97,6 +97,8 @@ kubectl apply -f deploy/kubechain-reader.yaml -n nodes
 
 Listing a Secret returns its bytes from the API. The CLI discards them. The report prints the Secret name and the mount path.
 
+The example is one namespace. A ClusterRole for more than one namespace is a comment in that file, not a second manifest.
+
 StorageClass and kubelet volume stats are cluster-scoped. The Role comment says which extra rules those reads need. If they are not granted, the report says so and continues.
 
 ## Development

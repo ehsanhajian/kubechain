@@ -1,6 +1,8 @@
 # Namespace-scoped read for `kubechain check --namespace`.
 # KubeChain does not apply this file.
 # Listing a Secret returns its bytes from the API. The CLI discards them.
+# A ClusterRole with these rules would cover more than one namespace.
+# This file stays a Role. That ClusterRole is not a second manifest.
 # StorageClass is cluster-scoped. A live read of binding mode and expansion
 # needs get, list, and watch on storageclasses.storage.k8s.io in a ClusterRole.
 # Kubelet volume stats need get on nodes/proxy, which is also cluster-scoped.
