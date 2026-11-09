@@ -35,7 +35,7 @@ def evaluate(
     chain = [item for item in workloads if item["chain_data"] and item["kind"] == "StatefulSet"]
     findings.extend(_statefulsets(chain, objects))
     findings.extend(_deployments(workloads))
-    findings.extend(_services(chain, objects, profiles))
+    findings.extend(_services(chain, objects))
     findings.extend(_secrets(workloads, objects))
     findings.extend(_storage(chain, objects, live=live, classes_known=classes_known))
     findings.extend(_images(workloads))
@@ -213,15 +213,17 @@ def _deployments(workloads: list[dict]) -> list[Finding]:
     return findings
 
 
-def _services(chain: list[dict], objects: list[dict], profiles: dict[str, Profile]) -> list[Finding]:
+def _services(chain: list[dict], objects: list[dict]) -> list[Finding]:
     findings = []
     engine_ports = {8551}
     rpc_ports = {8545, 8546}
-    for profile in profiles.values():
-        if profile.role == "execution" and profile.engine_port:
+    for item in chain:
+        profile = _primary(item)
+        if profile is None or profile.role != "execution":
+            continue
+        if profile.engine_port:
             engine_ports.add(profile.engine_port)
-        if profile.role == "execution":
-            rpc_ports.update(profile.rpc_ports)
+        rpc_ports.update(profile.rpc_ports)
     for service in _kind(objects, "Service"):
         published = set(_ports(service))
         name = (service.get("metadata") or {}).get("name") or ""
