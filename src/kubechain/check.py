@@ -6,6 +6,7 @@ from kubechain.catalog import Profile, resolve
 from kubechain.model import Finding, Report, Rollout
 
 DATA_NAMES = {"data", "chain", "geth", "nethermind"}
+CHAIN_VOLUME_SOURCES = ("emptyDir", "hostPath", "persistentVolumeClaim")
 MOVING_TAGS = {"latest", "main", "master", "develop", "dev", "stable", "edge", "nightly", "rolling"}
 _MEM = (
     ("Ki", 1024),
@@ -78,6 +79,12 @@ def _workload(obj: dict, profiles: dict[str, Profile], overlay: dict | None) -> 
             data_names.add(profile.data_volume)
     holds_data = bool(names & data_names) or any(profile.role == "execution" for _, profile in known)
     kind = obj.get("kind")
+    chain_data = (holds_data and kind == "StatefulSet") or (
+        kind == "Deployment" and _holds_chain_volume(pod, spec, data_names)
+    )
+    if kind == "Deployment" and not chain_data:
+        resolved = [(container, None) for container, _profile in resolved]
+        known = []
     return {
         "kind": kind,
         "name": (obj.get("metadata") or {}).get("name") or "",
@@ -86,9 +93,19 @@ def _workload(obj: dict, profiles: dict[str, Profile], overlay: dict | None) -> 
         "pod": pod,
         "containers": resolved,
         "known": known,
-        "chain_data": (holds_data and kind == "StatefulSet") or (kind == "Deployment" and bool(names & data_names)),
+        "chain_data": chain_data,
         "data_names": data_names,
     }
+
+
+def _holds_chain_volume(pod: dict, spec: dict, data_names: set[str]) -> bool:
+    for volume in pod.get("volumes") or []:
+        if volume.get("name") in data_names and any(source in volume for source in CHAIN_VOLUME_SOURCES):
+            return True
+    for claim in spec.get("volumeClaimTemplates") or []:
+        if (claim.get("metadata") or {}).get("name") in data_names:
+            return True
+    return False
 
 
 def _statefulsets(chain: list[dict], objects: list[dict]) -> list[Finding]:
