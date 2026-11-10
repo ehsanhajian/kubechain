@@ -519,13 +519,12 @@ def _probes(workloads: list[dict]) -> list[Finding]:
                     "Add a startup probe so a long sync is not killed.",
                 ))
                 continue
-            liveness = container.get("livenessProbe") or {}
-            port = _probe_port(liveness)
+            port = _http_port(container.get("livenessProbe") or {}, container)
             if port in profile.rpc_ports and not container.get("startupProbe"):
                 findings.append(_finding(
                     "liveness-kills-sync", "warning", item["name"],
-                    "Liveness uses the RPC port and there is no startup probe.",
-                    "Add a startup probe. A long sync will otherwise fail liveness and the kubelet will restart the node.",
+                    "A long sync will fail the probe and the kubelet will restart the node.",
+                    "Add a startup probe, or point liveness at a port that stays up during sync.",
                 ))
     return findings
 
@@ -995,10 +994,19 @@ def _image_ok(image: str) -> bool:
     return any(character.isdigit() for character in tag)
 
 
-def _probe_port(probe: dict) -> int | None:
-    http = probe.get("httpGet") or {}
-    port = http.get("port")
-    return port if isinstance(port, int) else None
+def _http_port(probe: dict, container: dict) -> int | None:
+    if "httpGet" not in probe:
+        return None
+    port = (probe.get("httpGet") or {}).get("port")
+    if isinstance(port, int):
+        return port
+    if isinstance(port, str) and port.isdigit():
+        return int(port)
+    if isinstance(port, str):
+        for entry in container.get("ports") or []:
+            if entry.get("name") == port and isinstance(entry.get("containerPort"), int):
+                return entry["containerPort"]
+    return None
 
 
 def _default_class(storage_class: dict) -> bool:
