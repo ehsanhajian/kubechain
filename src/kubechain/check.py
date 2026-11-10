@@ -73,6 +73,7 @@ def _workload(obj: dict, profiles: dict[str, Profile], overlay: dict | None) -> 
     containers = list(pod.get("containers") or [])
     resolved = [(container, resolve(container, profiles, overlay)) for container in containers]
     known = [(container, profile) for container, profile in resolved if profile is not None]
+    recognized = list(known)
     names = {volume.get("name") for volume in pod.get("volumes") or []}
     names.update(claim.get("metadata", {}).get("name") for claim in spec.get("volumeClaimTemplates") or [])
     data_names = set(DATA_NAMES)
@@ -95,6 +96,7 @@ def _workload(obj: dict, profiles: dict[str, Profile], overlay: dict | None) -> 
         "pod": pod,
         "containers": resolved,
         "known": known,
+        "recognized": recognized,
         "chain_data": chain_data,
         "data_names": data_names,
     }
@@ -457,7 +459,7 @@ def _images(workloads: list[dict]) -> list[Finding]:
 def _resources(workloads: list[dict]) -> list[Finding]:
     findings = []
     for item in workloads:
-        for container, profile in item["known"]:
+        for container, profile in _resource_clients(item):
             requests = ((container.get("resources") or {}).get("requests") or {})
             limits = ((container.get("resources") or {}).get("limits") or {})
             missing = [key for key in ("cpu", "memory") if key not in requests]
@@ -468,16 +470,39 @@ def _resources(workloads: list[dict]) -> list[Finding]:
                     "Set CPU and memory requests for this client.",
                 ))
             for key, floor in (("cpu", profile.cpu), ("memory", profile.memory)):
-                if not floor or key not in limits:
+                if not floor:
                     continue
-                below = _cpu(limits[key]) < _cpu(floor) if key == "cpu" else _bytes(limits[key]) < _bytes(floor)
-                if below:
+                if key in requests and _below_floor(key, requests[key], floor):
+                    findings.append(_finding(
+                        "resources-below-floor", "warning", f"{item['name']}/{key}",
+                        f"The {key} request {requests[key]} is below the floor {floor}. {profile.source}",
+                        "Raise the request to the floor.",
+                    ))
+                if key in limits and _below_floor(key, limits[key], floor):
                     findings.append(_finding(
                         "resources-below-floor", "warning", f"{item['name']}/{key}",
                         f"The {key} limit {limits[key]} is below the floor {floor}. {profile.source}",
                         "Raise the limit to the floor.",
                     ))
     return findings
+
+
+def _resource_clients(item: dict) -> list[tuple[dict, Profile]]:
+    if item["known"]:
+        return item["known"]
+    if item["kind"] == "Deployment" and not item["chain_data"]:
+        return [
+            (container, profile)
+            for container, profile in item.get("recognized") or []
+            if profile is not None and profile.role == "relay"
+        ]
+    return []
+
+
+def _below_floor(key: str, value: object, floor: str) -> bool:
+    if key == "cpu":
+        return _cpu(value) < _cpu(floor)
+    return _bytes(value) < _bytes(floor)
 
 
 def _probes(workloads: list[dict]) -> list[Finding]:

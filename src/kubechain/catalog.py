@@ -71,10 +71,22 @@ def load_profile(path: Path) -> dict:
 def resolve(container: dict, profiles: dict[str, Profile], overlay: dict | None) -> Profile | None:
     name = str(container.get("name") or "")
     image = str(container.get("image") or "")
-    chosen = profiles.get(name) or _by_image(image, profiles)
+    chosen = _by_name(name, profiles) or _by_image(image, profiles)
     if overlay and overlay.get("comm") == name:
         return _merge(chosen, overlay)
     return chosen
+
+
+def _by_name(name: str, profiles: dict[str, Profile]) -> Profile | None:
+    lowered = name.lower()
+    best: Profile | None = None
+    best_len = 0
+    for profile in profiles.values():
+        comm = profile.comm.lower()
+        if comm and comm in lowered and len(comm) > best_len:
+            best = profile
+            best_len = len(comm)
+    return best
 
 
 def _by_image(image: str, profiles: dict[str, Profile]) -> Profile | None:
@@ -83,14 +95,15 @@ def _by_image(image: str, profiles: dict[str, Profile]) -> Profile | None:
     colon = path.rfind(":")
     if colon > slash:
         path = path[:colon]
-    segments = path.split("/")
+    segments = [segment.lower() for segment in path.split("/") if segment]
     best: Profile | None = None
-    best_len = -1
+    best_len = 0
     for profile in profiles.values():
         for hint in profile.images:
-            if hint in segments and len(hint) > best_len:
+            needle = hint.lower()
+            if any(needle in segment for segment in segments) and len(needle) > best_len:
                 best = profile
-                best_len = len(hint)
+                best_len = len(needle)
     return best
 
 
