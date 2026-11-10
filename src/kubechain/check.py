@@ -36,7 +36,9 @@ def evaluate(
     findings.extend(_statefulsets(chain, objects))
     findings.extend(_deployments(workloads))
     findings.extend(_services(chain, objects))
-    findings.extend(_secrets(workloads, objects))
+    secret_findings, secret_notes = _secrets(workloads, objects)
+    findings.extend(secret_findings)
+    notes.extend(secret_notes)
     findings.extend(_storage(chain, objects, live=live, classes_known=classes_known))
     findings.extend(_images(workloads))
     findings.extend(_resources(workloads))
@@ -263,26 +265,29 @@ def _services(chain: list[dict], objects: list[dict]) -> list[Finding]:
     return findings
 
 
-def _secrets(workloads: list[dict], objects: list[dict]) -> list[Finding]:
+def _secrets(workloads: list[dict], objects: list[dict]) -> tuple[list[Finding], list[str]]:
     findings = []
+    notes = []
     for item in workloads:
         for container, profile in item["known"]:
             if profile is None or not profile.jwt:
                 continue
-            mounted, env_kind = _jwt_state(item["pod"], container)
+            mounted, problem = _jwt_state(item["pod"], container)
             target = item["name"]
-            if env_kind == "env":
-                findings.append(_finding(
-                    "jwt-from-env", "critical", target,
-                    "The JWT is set from the environment.",
-                    "Mount the JWT Secret as a file.",
-                ))
-            elif env_kind == "configmap":
-                findings.append(_finding(
-                    "jwt-from-configmap", "critical", target,
-                    "The JWT comes from a ConfigMap.",
-                    "Move the JWT to a Secret and mount it as a file.",
-                ))
+            if problem is not None:
+                kind, detail = problem
+                if kind == "env":
+                    reason = f"The JWT is set from {detail}." if detail else "The JWT is set from the environment."
+                    findings.append(_finding(
+                        "jwt-from-env", "critical", target, reason,
+                        "Mount the JWT Secret as a file.",
+                    ))
+                else:
+                    reason = f"The JWT comes from {detail}." if detail else "The JWT comes from a ConfigMap."
+                    findings.append(_finding(
+                        "jwt-from-configmap", "critical", target, reason,
+                        "Move the JWT to a Secret and mount it as a file.",
+                    ))
             elif not mounted:
                 findings.append(_finding(
                     "jwt-missing", "critical", target,
@@ -290,13 +295,17 @@ def _secrets(workloads: list[dict], objects: list[dict]) -> list[Finding]:
                     "Mount the JWT Secret as a file.",
                 ))
             else:
-                for secret_name in mounted:
+                for secret_name, path in mounted:
                     if not _find(objects, "Secret", secret_name, item["namespace"]):
                         findings.append(_finding(
                             "jwt-missing", "critical", target,
-                            f"Secret {secret_name} is referenced and missing.",
+                            f"Secret {secret_name} mounted at {path} is missing.",
                             "Create the Secret, or fix the volume so it names the Secret that exists.",
                         ))
+                    else:
+                        note = f"jwt {target} Secret {secret_name} mounted at {path}"
+                        if note not in notes:
+                            notes.append(note)
     for config in _kind(objects, "ConfigMap"):
         keys = list((config.get("data") or {})) + list((config.get("binaryData") or {}))
         name = (config.get("metadata") or {}).get("name") or ""
@@ -306,7 +315,7 @@ def _secrets(workloads: list[dict], objects: list[dict]) -> list[Finding]:
                 "A node key or keystore is stored in a ConfigMap.",
                 "Move the key material to a Secret.",
             ))
-    return findings
+    return findings, notes
 
 
 def _storage(chain: list[dict], objects: list[dict], *, live: bool, classes_known: bool) -> list[Finding]:
@@ -695,32 +704,60 @@ def _spread(pod: dict) -> bool:
     return False
 
 
-def _jwt_state(pod: dict, container: dict) -> tuple[list[str], str | None]:
+def _jwt_state(pod: dict, container: dict) -> tuple[list[tuple[str, str]], tuple[str, str] | None]:
     volumes = {volume.get("name"): volume for volume in pod.get("volumes") or []}
-    mounted = []
+    mounted: list[tuple[str, str]] = []
     for mount in container.get("volumeMounts") or []:
         volume = volumes.get(mount.get("name")) or {}
         path = str(mount.get("mountPath") or "")
-        if "secret" in volume and (_jwt_name(volume["secret"].get("secretName") or "") or "jwt" in path):
-            mounted.append(volume["secret"].get("secretName") or "")
-        if "configMap" in volume and "jwt" in path:
-            return mounted, "configmap"
+        config_name = str((volume.get("configMap") or {}).get("name") or "")
+        if "configMap" in volume and (_jwt_name(config_name) or "jwt" in path.lower()):
+            where = f"ConfigMap {config_name} mounted at {path}" if config_name else f"a ConfigMap mounted at {path}"
+            return mounted, ("configmap", where)
+        for secret_name in _volume_secret_names(volume):
+            if secret_name and (_jwt_name(secret_name) or "jwt" in path.lower()):
+                mounted.append((secret_name, path))
     for env in container.get("env") or []:
-        if "jwt" not in str(env.get("name") or "").lower():
-            continue
+        name = str(env.get("name") or "")
         source = env.get("valueFrom") or {}
-        if "configMapKeyRef" in source:
-            return mounted, "configmap"
-        return mounted, "env"
+        secret_ref = source.get("secretKeyRef") or {}
+        config_ref = source.get("configMapKeyRef") or {}
+        ref_name = str(secret_ref.get("name") or config_ref.get("name") or "")
+        ref_key = str(secret_ref.get("key") or config_ref.get("key") or "")
+        if not any(_jwt_name(part) or "jwt" in part.lower() for part in (name, ref_name, ref_key)):
+            continue
+        if config_ref:
+            where = f"ConfigMap {config_ref.get('name')}" if config_ref.get("name") else "a ConfigMap"
+            return mounted, ("configmap", where)
+        if name:
+            return mounted, ("env", f"the environment variable {name}")
+        return mounted, ("env", "the environment")
+    for source in container.get("envFrom") or []:
+        config_name = str((source.get("configMapRef") or {}).get("name") or "")
+        secret_name = str((source.get("secretRef") or {}).get("name") or "")
+        if "configMapRef" in source and _jwt_name(config_name):
+            return mounted, ("configmap", f"ConfigMap {config_name}" if config_name else "a ConfigMap")
+        if "secretRef" in source and _jwt_name(secret_name):
+            return mounted, ("env", f"Secret {secret_name} through the environment" if secret_name else "the environment")
     return mounted, None
+
+
+def _volume_secret_names(volume: dict) -> list[str]:
+    names = []
+    if "secret" in volume:
+        names.append(str((volume.get("secret") or {}).get("secretName") or ""))
+    for source in (volume.get("projected") or {}).get("sources") or []:
+        if "secret" in source:
+            names.append(str((source.get("secret") or {}).get("name") or ""))
+    return names
 
 
 def _jwt_names(item: dict) -> list[str]:
     names = []
     for container, profile in item["known"]:
         if profile and profile.jwt:
-            mounted, _ = _jwt_state(item["pod"], container)
-            names.extend(mounted)
+            mounted, _problem = _jwt_state(item["pod"], container)
+            names.extend(name for name, _path in mounted)
     return names
 
 
