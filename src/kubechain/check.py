@@ -320,32 +320,34 @@ def _secrets(workloads: list[dict], objects: list[dict]) -> tuple[list[Finding],
 
 def _storage(chain: list[dict], objects: list[dict], *, live: bool, classes_known: bool) -> list[Finding]:
     findings = []
-    classes = {((item.get("metadata") or {}).get("name")): item for item in _kind(objects, "StorageClass")}
-    default = any(_default_class(item) for item in classes.values())
+    classes = {
+        (item.get("metadata") or {}).get("name"): item
+        for item in _kind(objects, "StorageClass")
+        if (item.get("metadata") or {}).get("name")
+    }
+    defaults = [item for item in classes.values() if _default_class(item)]
     for item in chain:
         for claim in (item["obj"].get("spec") or {}).get("volumeClaimTemplates") or []:
             claim_name = (claim.get("metadata") or {}).get("name") or ""
             if claim_name not in item["data_names"]:
                 continue
-            findings.extend(_claim_findings(item["name"], claim, classes, default, classes_known, _primary(item)))
-    if live:
-        for pvc in _kind(objects, "PersistentVolumeClaim"):
-            phase = (pvc.get("status") or {}).get("phase")
-            name = (pvc.get("metadata") or {}).get("name") or ""
-            if phase and phase != "Bound":
-                findings.append(_finding(
-                    "pvc-not-bound", "critical", name,
-                    f"The PersistentVolumeClaim phase is {phase}.",
-                    "Bind the claim before the node is treated as ready.",
-                ))
+            findings.extend(_claim_findings(item["name"], claim, classes, defaults, classes_known, _primary(item)))
+            if live:
+                findings.extend(_pvc_findings(item, claim_name, objects))
     return findings
 
 
-def _claim_findings(target: str, claim: dict, classes: dict, default: bool, classes_known: bool, profile: Profile | None) -> list[Finding]:
+def _claim_findings(
+    target: str,
+    claim: dict,
+    classes: dict,
+    defaults: list[dict],
+    classes_known: bool,
+    profile: Profile | None,
+) -> list[Finding]:
     findings = []
     spec = claim.get("spec") or {}
-    modes = spec.get("accessModes") or []
-    if "ReadWriteOnce" not in modes:
+    if (spec.get("accessModes") or []) != ["ReadWriteOnce"]:
         findings.append(_finding(
             "storage-not-rwo", "critical", target,
             "Chain data is not ReadWriteOnce.",
@@ -365,27 +367,64 @@ def _claim_findings(target: str, claim: dict, classes: dict, default: bool, clas
             "Raise the claim size to the floor.",
         ))
     class_name = spec.get("storageClassName")
-    if not class_name and not default:
-        if classes_known:
+    chosen: list[dict] = []
+    if class_name:
+        if class_name in classes:
+            chosen = [classes[class_name]]
+    elif class_name == "":
+        findings.append(_finding(
+            "storage-no-class", "critical", target,
+            "The data claim sets an empty storageClassName.",
+            "Set storageClassName, or omit it to use the default StorageClass.",
+        ))
+    elif defaults:
+        chosen = defaults
+    elif classes_known:
+        findings.append(_finding(
+            "storage-no-class", "critical", target,
+            "The data claim has no StorageClass and no default class is set.",
+            "Set storageClassName, or mark a default StorageClass.",
+        ))
+    for storage_class in chosen:
+        findings.extend(_class_findings(target, storage_class))
+    return findings
+
+
+def _class_findings(target: str, storage_class: dict) -> list[Finding]:
+    findings = []
+    name = (storage_class.get("metadata") or {}).get("name") or "The StorageClass"
+    mode = storage_class.get("volumeBindingMode") or "Immediate"
+    if mode != "WaitForFirstConsumer":
+        reason = f"StorageClass {name} binds immediately." if mode == "Immediate" else f"StorageClass {name} volumeBindingMode is {mode}."
+        findings.append(_finding(
+            "storage-bind-immediate", "warning", target, reason,
+            "Use WaitForFirstConsumer so the volume is created with the pod.",
+        ))
+    if storage_class.get("allowVolumeExpansion") is not True:
+        findings.append(_finding(
+            "storage-no-expansion", "warning", target,
+            f"StorageClass {name} does not allow volume expansion.",
+            "Enable allowVolumeExpansion so a growing chain can be resized.",
+        ))
+    return findings
+
+
+def _pvc_findings(item: dict, claim_name: str, objects: list[dict]) -> list[Finding]:
+    findings = []
+    prefix = f"{claim_name}-{item['name']}-"
+    for pvc in _kind(objects, "PersistentVolumeClaim"):
+        meta = pvc.get("metadata") or {}
+        name = meta.get("name") or ""
+        namespace = meta.get("namespace") or "default"
+        ordinal = name[len(prefix):] if name.startswith(prefix) else ""
+        if namespace != item["namespace"] or not ordinal.isdigit():
+            continue
+        phase = (pvc.get("status") or {}).get("phase") or "unset"
+        if phase != "Bound":
             findings.append(_finding(
-                "storage-no-class", "critical", target,
-                "The data claim has no StorageClass and no default class is set.",
-                "Set storageClassName, or mark a default StorageClass.",
-            ))
-    chosen = classes.get(class_name) if class_name else None
-    if chosen is not None:
-        mode = chosen.get("volumeBindingMode") or "Immediate"
-        if mode == "Immediate":
-            findings.append(_finding(
-                "storage-bind-immediate", "warning", target,
-                "The StorageClass binds immediately.",
-                "Use WaitForFirstConsumer so the volume is created with the pod.",
-            ))
-        if not chosen.get("allowVolumeExpansion"):
-            findings.append(_finding(
-                "storage-no-expansion", "warning", target,
-                "The StorageClass does not allow volume expansion.",
-                "Enable allowVolumeExpansion so a growing chain can be resized.",
+                "pvc-not-bound", "critical", name,
+                f"The PersistentVolumeClaim phase is {phase}.",
+                "Bind the claim before the node is treated as ready.",
             ))
     return findings
 
