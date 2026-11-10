@@ -432,17 +432,19 @@ def _pvc_findings(item: dict, claim_name: str, objects: list[dict]) -> list[Find
 def _images(workloads: list[dict]) -> list[Finding]:
     findings = []
     for item in workloads:
+        proxy = item["kind"] == "Deployment" and not item["chain_data"]
         for container, profile in item["containers"]:
             image = str(container.get("image") or "")
             if not image or _image_ok(image):
                 continue
-            if profile is None:
-                if item["kind"] == "Deployment" and not item["chain_data"]:
-                    findings.append(_finding(
-                        "image-moving-tag", "info", item["name"],
-                        f"The proxy image {image} is not pinned.",
-                        "Pin the proxy image when you want a reviewed release.",
-                    ))
+            if proxy:
+                findings.append(_finding(
+                    "image-moving-tag", "info", item["name"],
+                    f"The proxy image {image} is not pinned.",
+                    "Pin the proxy image when you want a reviewed release.",
+                ))
+                continue
+            if profile is None and not _mounts_chain_data(container, item):
                 continue
             findings.append(_finding(
                 "image-moving-tag", "warning", item["name"],
@@ -944,16 +946,26 @@ def _positive(value: object) -> bool:
     return False
 
 
+def _mounts_chain_data(container: dict, item: dict) -> bool:
+    names = item["data_names"]
+    return any(mount.get("name") in names for mount in container.get("volumeMounts") or [])
+
+
 def _image_ok(image: str) -> bool:
-    if "@sha256:" in image:
-        return True
-    name = image.split("@", 1)[0]
-    slash = name.rfind("/")
-    colon = name.rfind(":")
+    reference = image.strip()
+    if "@" in reference:
+        name, digest = reference.rsplit("@", 1)
+        algorithm, separator, value = digest.partition(":")
+        pinned = separator and algorithm.lower() == "sha256" and len(value) == 64
+        if pinned and all(character in "0123456789abcdefABCDEF" for character in value):
+            return True
+        reference = name
+    slash = reference.rfind("/")
+    colon = reference.rfind(":")
     if colon <= slash:
         return False
-    tag = name[colon + 1 :]
-    if tag in MOVING_TAGS:
+    tag = reference[colon + 1 :]
+    if tag.lower() in MOVING_TAGS:
         return False
     return any(character.isdigit() for character in tag)
 
