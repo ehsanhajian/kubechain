@@ -621,23 +621,25 @@ def _policies(chain: list[dict], objects: list[dict]) -> list[Finding]:
         if chain:
             return [_finding(
                 "network-policy-missing", "warning", chain[0]["namespace"],
-                "No NetworkPolicy was found. This check assumes the CNI is not enforcing policy.",
+                "No NetworkPolicy was found, so no default deny was found. This check assumes the CNI is not enforcing policy.",
                 "Add a policy for the peer port and the engine API, or confirm the cluster enforces policy another way.",
             )]
         return []
+    consensus = [_labels(item) for item in chain if _role(item) == "consensus" and _labels(item)]
     findings = []
     for item in chain:
         profile = _primary(item)
         if profile is None:
             continue
         selected = [policy for policy in policies if _selects(policy, _labels(item))]
-        if profile.engine_port and profile.role == "execution" and _port_open_to_all(selected, profile.engine_port):
-            findings.append(_finding(
-                "engine-api-open", "warning", item["name"],
-                "A NetworkPolicy leaves the engine API open to every pod.",
-                "Allow the engine API only from the consensus workload.",
-            ))
-        if profile.p2p_ports and not any(_port_allowed(selected, port) for port in profile.p2p_ports):
+        if profile.engine_port and profile.role == "execution":
+            problem = _engine_problem(selected, profile.engine_port, consensus)
+            if problem:
+                findings.append(_finding(
+                    "engine-api-open", "warning", item["name"], problem,
+                    "Allow the engine API only from the consensus workload.",
+                ))
+        if profile.p2p_ports and not any(_peer_from_outside(selected, port) for port in profile.p2p_ports):
             findings.append(_finding(
                 "peer-port-blocked", "warning", item["name"],
                 "No NetworkPolicy allows the peer port.",
@@ -936,21 +938,57 @@ def _selector_matches_any(selector: dict, chain: list[dict]) -> bool:
     return any(_label_match(selector, _labels(item)) for item in chain)
 
 
-def _port_open_to_all(policies: list[dict], port: int) -> bool:
+def _engine_problem(policies: list[dict], port: int, consensus: list[dict]) -> str | None:
+    rank = {"other": 1, "pods": 2, "namespaces": 3}
+    problem = None
     for policy in policies:
         for rule in (policy.get("spec") or {}).get("ingress") or []:
             if not _rule_has_port(rule, port):
                 continue
             sources = rule.get("from")
-            if not sources or any(_from_everyone(entry) for entry in sources):
-                return True
-    return False
+            kinds = ["pods"] if not sources else [_engine_source(entry, consensus) for entry in sources]
+            for kind in kinds:
+                if kind != "consensus" and (problem is None or rank[kind] > rank[problem]):
+                    problem = kind
+    if problem == "namespaces":
+        return "A NetworkPolicy leaves the engine API open with an empty namespace selector."
+    if problem == "pods":
+        return "A NetworkPolicy leaves the engine API open to every pod."
+    if problem == "other":
+        return "A NetworkPolicy allows the engine API from something other than the consensus workload."
+    return None
 
 
-def _port_allowed(policies: list[dict], port: int) -> bool:
+def _engine_source(entry: dict, consensus: list[dict]) -> str:
+    if not entry:
+        return "pods"
+    has_pod = "podSelector" in entry
+    has_ns = "namespaceSelector" in entry
+    pod = entry.get("podSelector") or {}
+    pod_empty = has_pod and not pod
+    ns_empty = has_ns and not entry.get("namespaceSelector")
+    if "ipBlock" in entry and not has_pod and not has_ns:
+        return "other"
+    if ns_empty and (not has_pod or pod_empty):
+        return "namespaces"
+    if pod_empty and not has_ns:
+        return "pods"
+    if has_pod and not pod_empty:
+        if "ipBlock" in entry:
+            return "other"
+        if any(_label_match(pod, labels) for labels in consensus):
+            return "consensus"
+        return "other"
+    return "other"
+
+
+def _peer_from_outside(policies: list[dict], port: int) -> bool:
     for policy in policies:
         for rule in (policy.get("spec") or {}).get("ingress") or []:
-            if _rule_has_port(rule, port):
+            if not _rule_has_port(rule, port):
+                continue
+            sources = rule.get("from")
+            if not sources or any((not entry) or "ipBlock" in entry for entry in sources):
                 return True
     return False
 
@@ -959,17 +997,13 @@ def _rule_has_port(rule: dict, port: int) -> bool:
     ports = rule.get("ports")
     if not ports:
         return True
-    return any(entry.get("port") == port for entry in ports)
+    return any(_same_port(entry.get("port"), port) for entry in ports)
 
 
-def _from_everyone(entry: dict) -> bool:
-    if not entry:
+def _same_port(value: object, port: int) -> bool:
+    if value == port:
         return True
-    if "podSelector" in entry and not entry["podSelector"]:
-        return True
-    if "namespaceSelector" in entry and not entry["namespaceSelector"]:
-        return True
-    return False
+    return isinstance(value, str) and value.isdigit() and int(value) == port
 
 
 def _command_text(pod: dict) -> str:
