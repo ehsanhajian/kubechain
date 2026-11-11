@@ -102,9 +102,8 @@ def usage_from_summary(summary: dict, namespace: str) -> list[dict]:
         for volume in pod.get("volume") or []:
             pvc = (volume.get("pvcRef") or {}).get("name")
             used = volume.get("usedBytes")
-            capacity = volume.get("capacityBytes")
-            if pvc and isinstance(used, int) and isinstance(capacity, int) and capacity > 0:
-                rows.append({"claim": pvc, "used": used, "capacity": capacity})
+            if pvc and isinstance(used, int) and used >= 0:
+                rows.append({"claim": pvc, "used": used})
     return rows
 
 
@@ -158,19 +157,20 @@ def _usage(core: ReadOnly, namespace: str, objects: list[dict]) -> list[dict] | 
     if not nodes:
         return None
     rows: list[dict] = []
-    try:
-        for node in sorted(nodes):
+    read = False
+    for node in sorted(nodes):
+        try:
             response = core.connect_get_node_proxy_with_path(node, "stats/summary")
             payload = response.data if hasattr(response, "data") else response
             if isinstance(payload, bytes):
                 payload = payload.decode()
             summary = json.loads(payload) if isinstance(payload, str) else payload
             rows.extend(usage_from_summary(summary, namespace))
-    except Exception as exc:
-        if _fatal(exc):
-            raise
-        return None
-    return rows
+            read = True
+        except Exception as exc:
+            if _fatal(exc):
+                raise
+    return rows if read else None
 
 
 def _api_message(exc: object, namespace: str) -> str:

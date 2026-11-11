@@ -50,7 +50,7 @@ def evaluate(
     if usage is None:
         notes.append("storage performance was not read")
     else:
-        findings.extend(_usage(usage))
+        findings.extend(_usage(usage, objects))
     findings.extend(_policies(chain, objects))
     findings.extend(_pair(workloads))
     findings.extend(_budgets(chain, objects))
@@ -581,20 +581,35 @@ def _container_restarts(pod_name: str, status: dict) -> list[Finding]:
     return findings
 
 
-def _usage(rows: list[dict]) -> list[Finding]:
-    findings = []
+def _usage(rows: list[dict], objects: list[dict]) -> list[Finding]:
+    sizes = {}
+    for pvc in _kind(objects, "PersistentVolumeClaim"):
+        name = (pvc.get("metadata") or {}).get("name") or ""
+        size = (((pvc.get("spec") or {}).get("resources") or {}).get("requests") or {}).get("storage")
+        if name and size:
+            sizes[name] = size
+    used_by_claim: dict[str, int] = {}
     for row in rows:
-        ratio = row["used"] / row["capacity"]
-        if ratio > 0.95:
+        claim = row["claim"]
+        used_by_claim[claim] = max(used_by_claim.get(claim, 0), row["used"])
+    findings = []
+    for claim, used in used_by_claim.items():
+        size = sizes.get(claim)
+        if not size:
+            continue
+        request = _bytes(size)
+        if request <= 0:
+            continue
+        if used * 100 > request * 95:
             findings.append(_finding(
-                "storage-almost-full", "critical", row["claim"],
-                "Volume usage is above 95% of the claim.",
+                "storage-almost-full", "critical", claim,
+                f"Used {used} bytes of the {size} PVC request, above 95%.",
                 "Expand the volume, or prune, before the node stops.",
             ))
-        elif ratio > 0.80:
+        elif used * 100 > request * 80:
             findings.append(_finding(
-                "storage-filling", "warning", row["claim"],
-                "Volume usage is above 80% of the claim.",
+                "storage-filling", "warning", claim,
+                f"Used {used} bytes of the {size} PVC request, above 80%.",
                 "Plan an expansion before the next upgrade.",
             ))
     return findings

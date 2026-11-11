@@ -21,18 +21,32 @@ def test_volume_usage_thresholds() -> None:
             {
                 "podRef": {"name": "geth-0", "namespace": "nodes"},
                 "volume": [
-                    {"pvcRef": {"name": "data-geth-0"}, "usedBytes": 81, "capacityBytes": 100},
-                    {"pvcRef": {"name": "data-geth-1"}, "usedBytes": 96, "capacityBytes": 100},
+                    {"pvcRef": {"name": "data-geth-0"}, "usedBytes": 81, "capacityBytes": 1000},
+                    {"pvcRef": {"name": "data-geth-1"}, "usedBytes": 96, "capacityBytes": 1000},
                 ],
-            }
+            },
+            {
+                "podRef": {"name": "other", "namespace": "other"},
+                "volume": [{"pvcRef": {"name": "data-geth-0"}, "usedBytes": 1000, "capacityBytes": 1000}],
+            },
         ]
     }
     rows = usage_from_summary(summary, "nodes")
-    report = evaluate([], catalog(), live=True, usage=rows, classes_known=True)
+    claims = [
+        {
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": name, "namespace": "nodes"},
+            "spec": {"resources": {"requests": {"storage": "100"}}},
+        }
+        for name in ("data-geth-0", "data-geth-1")
+    ]
+    report = evaluate(claims, catalog(), live=True, usage=rows, classes_known=True)
     ids = {finding.id for finding in report.findings}
     assert ids == {"storage-filling", "storage-almost-full"}
     assert report.verdict == "not-ready"
     assert "storage performance was not read" not in report.notes
+    filling = next(item for item in report.findings if item.id == "storage-filling")
+    assert filling.reason == "Used 81 bytes of the 100 PVC request, above 80%."
 
 
 def test_secret_bytes_are_discarded() -> None:
