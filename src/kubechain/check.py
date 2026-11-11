@@ -535,30 +535,50 @@ def _restarts(objects: list[dict]) -> tuple[list[Finding], bool]:
     for pod in pods:
         name = (pod.get("metadata") or {}).get("name") or ""
         for status in (pod.get("status") or {}).get("containerStatuses") or []:
-            waiting = ((status.get("state") or {}).get("waiting") or {}).get("reason")
-            terminated = ((status.get("lastState") or {}).get("terminated") or {}).get("reason")
-            current = ((status.get("state") or {}).get("terminated") or {}).get("reason")
-            reason = terminated or current
-            if reason == "OOMKilled" or waiting == "OOMKilled":
-                findings.append(_finding(
-                    "pod-oom", "critical", name,
-                    "A container was OOMKilled.",
-                    "Raise the memory limit above the client floor and inspect the node.",
-                ))
-            if waiting == "CrashLoopBackOff":
-                findings.append(_finding(
-                    "pod-crash-loop", "critical", name,
-                    "A container is in CrashLoopBackOff.",
-                    "Read the previous logs and fix the crash before treating the node as ready.",
-                ))
-            restart_count = status.get("restartCount") or 0
-            if restart_count > 3 and reason != "OOMKilled" and waiting not in {"CrashLoopBackOff", "OOMKilled"}:
-                findings.append(_finding(
-                    "pod-restarts", "warning", name,
-                    f"The container has restarted {restart_count} times.",
-                    "Inspect the previous exit before the next upgrade.",
-                ))
+            findings.extend(_container_restarts(name, status))
     return findings, bool(pods)
+
+
+def _container_restarts(pod_name: str, status: dict) -> list[Finding]:
+    state = status.get("state") or {}
+    waiting = (state.get("waiting") or {}).get("reason")
+    terminated = (state.get("terminated") or {}).get("reason")
+    current = waiting or terminated
+    last = ((status.get("lastState") or {}).get("terminated") or {}).get("reason")
+    count = status.get("restartCount")
+    count_text = f" restartCount is {count}." if isinstance(count, int) else ""
+    findings = []
+    oom = current == "OOMKilled" or last == "OOMKilled"
+    crash = current == "CrashLoopBackOff"
+    if oom:
+        parts = []
+        if current == "OOMKilled":
+            parts.append("The current state is OOMKilled.")
+        if last == "OOMKilled":
+            parts.append("The last terminated reason is OOMKilled.")
+        findings.append(_finding(
+            "pod-oom", "critical", pod_name,
+            " ".join(parts) + count_text,
+            "Raise the memory limit above the client floor and inspect the node.",
+        ))
+    if crash:
+        parts = ["The current state is CrashLoopBackOff."]
+        if last and last != "OOMKilled":
+            parts.append(f"The last terminated reason is {last}.")
+        findings.append(_finding(
+            "pod-crash-loop", "critical", pod_name,
+            " ".join(parts) + count_text,
+            "Read the previous logs and fix the crash before treating the node as ready.",
+        ))
+    if isinstance(count, int) and count > 3 and not oom and not crash:
+        reason = f"restartCount is {count}."
+        if last:
+            reason = f"{reason} The last terminated reason is {last}."
+        findings.append(_finding(
+            "pod-restarts", "warning", pod_name, reason,
+            "Inspect the previous exit before the next upgrade.",
+        ))
+    return findings
 
 
 def _usage(rows: list[dict]) -> list[Finding]:
