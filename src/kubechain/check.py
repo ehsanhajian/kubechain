@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from kubechain.catalog import Profile, resolve
 from kubechain.model import Finding, Report, Rollout
 
@@ -655,24 +657,25 @@ def _pair(workloads: list[dict]) -> list[Finding]:
     if execution and not consensus:
         findings.append(_finding(
             "consensus-missing", "warning", execution[0]["name"],
-            "An execution client is present and no consensus client is in this namespace.",
+            "An execution client is present and no consensus client is in this namespace. The pair may live in another namespace.",
             "Confirm the consensus client, or pass the namespace where it runs.",
         ))
-    exec_secrets = {name for item in execution for name in _jwt_names(item)}
-    cons_secrets = {name for item in consensus for name in _jwt_names(item)}
-    if exec_secrets and cons_secrets and exec_secrets != cons_secrets:
-        findings.append(_finding(
-            "jwt-secret-mismatch", "critical", execution[0]["name"],
-            "The execution and consensus clients mount different JWT Secrets.",
-            "Mount the same JWT Secret on both.",
-        ))
     if execution and consensus:
-        service_names = {(item["obj"].get("spec") or {}).get("serviceName") or item["name"] for item in execution}
-        ports = {(_primary(item).engine_port if _primary(item) else None) for item in execution}
-        ports.discard(None)
+        exec_jwt = [item for item in execution if _requires_jwt(item)]
+        cons_jwt = [item for item in consensus if _requires_jwt(item)]
+        exec_secrets = {name for item in exec_jwt for name in _jwt_names(item)}
+        cons_secrets = {name for item in cons_jwt for name in _jwt_names(item)}
+        if exec_jwt and cons_jwt and exec_secrets != cons_secrets:
+            findings.append(_finding(
+                "jwt-secret-mismatch", "critical", execution[0]["name"],
+                "The execution and consensus clients mount different JWT Secrets. "
+                f"Execution is {_secret_phrase(exec_secrets)}. Consensus is {_secret_phrase(cons_secrets)}.",
+                "Mount the same JWT Secret on both.",
+            ))
+        targets = _engine_targets(execution)
         for item in consensus:
             text = _command_text(item["pod"])
-            if not any(service in text and f"{port}" in text for service in service_names for port in ports):
+            if not any(_endpoint_targets(text, service, port) for service, port in targets):
                 findings.append(_finding(
                     "engine-endpoint-missing", "warning", item["name"],
                     "The consensus client does not target the execution Service and engine port.",
@@ -1004,6 +1007,33 @@ def _same_port(value: object, port: int) -> bool:
     if value == port:
         return True
     return isinstance(value, str) and value.isdigit() and int(value) == port
+
+
+def _requires_jwt(item: dict) -> bool:
+    return any(profile.jwt for _, profile in item["known"] if profile is not None)
+
+
+def _secret_phrase(names: set[str]) -> str:
+    return ", ".join(sorted(names)) if names else "none"
+
+
+def _engine_targets(execution: list[dict]) -> list[tuple[str, int]]:
+    targets = []
+    for item in execution:
+        profile = _primary(item)
+        if profile is None or not profile.engine_port:
+            continue
+        service = (item["obj"].get("spec") or {}).get("serviceName") or item["name"]
+        targets.append((str(service), int(profile.engine_port)))
+    return targets
+
+
+def _endpoint_targets(text: str, service: str, port: int) -> bool:
+    if not service:
+        return False
+    service_hit = re.search(rf"(?<![A-Za-z0-9-]){re.escape(service)}(?![A-Za-z0-9-])", text)
+    port_hit = re.search(rf"(?<!\d){port}(?!\d)", text)
+    return service_hit is not None and port_hit is not None
 
 
 def _command_text(pod: dict) -> str:
