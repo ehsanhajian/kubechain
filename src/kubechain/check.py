@@ -761,8 +761,8 @@ def _backup(chain: list[dict], objects: list[dict]) -> list[Finding]:
             continue
         findings.append(_finding(
             "no-backup-signal", "warning", item["name"],
-            "No VolumeSnapshot, Velero schedule, or kubechain.io/backup annotation was found.",
-            "Record a backup, or set kubechain.io/backup on the claim template to the runbook.",
+            "No VolumeSnapshot of the claim, Velero Backup or Schedule that selects it, or kubechain.io/backup annotation was found.",
+            "Record a backup, or set kubechain.io/backup on the claim template to a note, ticket, or runbook URL.",
         ))
     return findings
 
@@ -793,19 +793,115 @@ def _rollouts(chain: list[dict]) -> list[Rollout]:
 
 
 def _backed_up(claim: dict, item: dict, snapshots: list[dict], velero: list[dict]) -> bool:
-    annotations = (claim.get("metadata") or {}).get("annotations") or {}
-    if annotations.get("kubechain.io/backup"):
+    metadata = claim.get("metadata") or {}
+    annotations = metadata.get("annotations") or {}
+    if "kubechain.io/backup" in annotations:
         return True
-    claim_name = (claim.get("metadata") or {}).get("name") or ""
-    prefix = f"{claim_name}-{item['name']}-"
+    claim_name = metadata.get("name") or ""
+    labels = metadata.get("labels") or {}
+    if _snapshot_of_claim(snapshots, claim_name, item["name"], item["namespace"]):
+        return True
+    return any(_velero_selects(obj, item["namespace"], labels) for obj in velero)
+
+
+def _snapshot_of_claim(snapshots: list[dict], claim_name: str, workload: str, namespace: str) -> bool:
+    if not claim_name or not workload:
+        return False
+    prefix = f"{claim_name}-{workload}-"
     for snapshot in snapshots:
+        snap_ns = (snapshot.get("metadata") or {}).get("namespace")
+        if snap_ns and snap_ns != namespace:
+            continue
         source = ((snapshot.get("spec") or {}).get("source") or {}).get("persistentVolumeClaimName") or ""
-        if source == claim_name or source.startswith(prefix):
-            return True
-    for item_obj in velero:
-        if item["namespace"] == ((item_obj.get("metadata") or {}).get("namespace") or item["namespace"]):
+        ordinal = source[len(prefix):] if source.startswith(prefix) else ""
+        if ordinal.isdigit():
             return True
     return False
+
+
+_PVC_RESOURCES = {"persistentvolumeclaims", "persistentvolumeclaim", "pvc", "pvcs", "*"}
+
+
+def _velero_selects(obj: dict, namespace: str, labels: dict) -> bool:
+    spec = _velero_backup_spec(obj)
+    if spec is None:
+        return False
+    if not _velero_namespace(spec, namespace):
+        return False
+    if not _velero_resource(spec):
+        return False
+    return _velero_labels(spec, labels)
+
+
+def _velero_backup_spec(obj: dict) -> dict | None:
+    if not str(obj.get("apiVersion") or "").startswith("velero.io"):
+        return None
+    spec = obj.get("spec") or {}
+    if not isinstance(spec, dict):
+        return None
+    if obj.get("kind") == "Backup":
+        return spec
+    if obj.get("kind") == "Schedule":
+        template = spec.get("template")
+        return template if isinstance(template, dict) else None
+    return None
+
+
+def _string_list(value: object) -> list[str] | None:
+    if value is None:
+        return []
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
+    return None
+
+
+def _velero_namespace(spec: dict, namespace: str) -> bool:
+    excluded = _string_list(spec.get("excludedNamespaces"))
+    included = _string_list(spec.get("includedNamespaces"))
+    if excluded is None or included is None:
+        return False
+    if namespace in excluded or "*" in excluded:
+        return False
+    return not included or "*" in included or namespace in included
+
+
+def _velero_resource(spec: dict) -> bool:
+    excluded = _string_list(spec.get("excludedResources"))
+    included = _string_list(spec.get("includedResources"))
+    if excluded is None or included is None:
+        return False
+    excluded_names = {item.lower() for item in excluded}
+    included_names = {item.lower() for item in included}
+    if excluded_names & _PVC_RESOURCES or "*" in excluded_names:
+        return False
+    return not included_names or "*" in included_names or bool(included_names & _PVC_RESOURCES)
+
+
+def _velero_labels(spec: dict, labels: dict) -> bool:
+    if "labelSelector" in spec and spec.get("labelSelector") is not None and not isinstance(spec.get("labelSelector"), dict):
+        return False
+    if "orLabelSelectors" in spec and spec.get("orLabelSelectors") is not None and not isinstance(spec.get("orLabelSelectors"), list):
+        return False
+    selector = spec.get("labelSelector")
+    choices = spec.get("orLabelSelectors")
+    has_selector = isinstance(selector, dict)
+    has_or = isinstance(choices, list) and any(isinstance(item, dict) for item in choices)
+    if has_selector and has_or:
+        return False
+    if has_selector:
+        return _claim_labels(selector, labels)
+    if has_or:
+        return any(_claim_labels(item, labels) for item in choices if isinstance(item, dict))
+    return True
+
+
+def _claim_labels(selector: dict, labels: dict) -> bool:
+    if selector.get("matchExpressions"):
+        return False
+    match = selector.get("matchLabels") or {}
+    if not isinstance(match, dict):
+        return False
+    return all(labels.get(key) == value for key, value in match.items())
 
 
 def _spread(pod: dict) -> bool:
