@@ -685,12 +685,26 @@ def _pair(workloads: list[dict]) -> list[Finding]:
 
 
 def _budgets(chain: list[dict], objects: list[dict]) -> list[Finding]:
+    if not chain:
+        return []
     findings = []
     budgets = _kind(objects, "PodDisruptionBudget")
+    for budget in budgets:
+        spec = budget.get("spec") or {}
+        name = (budget.get("metadata") or {}).get("name") or ""
+        selector = spec.get("selector")
+        if not isinstance(selector, dict) or not _selector_matches_any(selector, chain):
+            findings.append(_finding(
+                "pdb-selector-empty", "warning", name,
+                "The disruption budget selector matches no chain pod.",
+                "Point the selector at the StatefulSet pod labels.",
+            ))
     for item in chain:
         labels = _labels(item)
-        matched = [budget for budget in budgets if _label_match((budget.get("spec") or {}).get("selector") or {}, labels)]
+        matched = [budget for budget in budgets if _covers(budget, labels)]
         replicas = (item["obj"].get("spec") or {}).get("replicas", 1)
+        if not isinstance(replicas, int) or isinstance(replicas, bool):
+            replicas = 1
         if not matched:
             findings.append(_finding(
                 "pdb-missing", "warning", item["name"],
@@ -701,18 +715,17 @@ def _budgets(chain: list[dict], objects: list[dict]) -> list[Finding]:
         for budget in matched:
             spec = budget.get("spec") or {}
             name = (budget.get("metadata") or {}).get("name") or item["name"]
-            if "selector" in spec and not _selector_matches_any(spec.get("selector") or {}, chain):
-                findings.append(_finding(
-                    "pdb-selector-empty", "warning", name,
-                    "The disruption budget selector matches no chain pod.",
-                    "Point the selector at the StatefulSet pod labels.",
-                ))
             minimum = spec.get("minAvailable")
             if _blocks_drain(minimum, replicas):
+                count = _available_count(minimum, replicas)
+                reason = "minAvailable equals replicas, so a voluntary drain cannot proceed."
+                if count is not None and count > replicas:
+                    reason = "minAvailable is above replicas, so a voluntary drain cannot proceed."
+                action = "Use maxUnavailable 1 so a voluntary drain can proceed."
+                if replicas == 1:
+                    action = "A single replica cannot be evicted, so a node upgrade needs a plan other than a drain."
                 findings.append(_finding(
-                    "pdb-blocks-drain", "warning", name,
-                    "minAvailable equals replicas, so a voluntary drain cannot proceed.",
-                    "Use maxUnavailable 1. A single replica needs an upgrade plan other than eviction.",
+                    "pdb-blocks-drain", "warning", name, reason, action,
                 ))
     return findings
 
@@ -1047,15 +1060,34 @@ def _command_text(pod: dict) -> str:
     return " ".join(chunks)
 
 
+def _covers(budget: dict, labels: dict) -> bool:
+    selector = (budget.get("spec") or {}).get("selector")
+    return isinstance(selector, dict) and _label_match(selector, labels)
+
+
 def _blocks_drain(minimum: object, replicas: int) -> bool:
+    if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
+        return False
+    count = _available_count(minimum, replicas)
+    return count is not None and count >= replicas
+
+
+def _available_count(minimum: object, replicas: int) -> int | None:
+    if isinstance(minimum, bool):
+        return None
     if isinstance(minimum, int):
-        return minimum == replicas
-    if isinstance(minimum, str) and minimum.endswith("%"):
+        return minimum
+    if not isinstance(minimum, str):
+        return None
+    if minimum.endswith("%"):
         try:
-            return int(minimum[:-1]) >= 100
+            percent = int(minimum[:-1])
         except ValueError:
-            return False
-    return False
+            return None
+        return (replicas * percent + 99) // 100
+    if minimum.isdigit():
+        return int(minimum)
+    return None
 
 
 def _positive(value: object) -> bool:
