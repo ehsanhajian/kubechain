@@ -41,6 +41,13 @@ def render_markdown(report: Report) -> str:
         f"namespace {report.namespace}",
         "",
     ]
+    if report.rollouts:
+        lines.append("## Rollouts")
+        lines.append("")
+        for rollout in report.rollouts:
+            partition = "" if rollout.partition is None else f" partition {rollout.partition}"
+            lines.append(f"- {rollout.target} {rollout.strategy}{partition}")
+        lines.append("")
     if report.notes:
         lines.append("## Notes")
         lines.append("")

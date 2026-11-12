@@ -171,7 +171,7 @@ def _statefulsets(chain: list[dict], objects: list[dict]) -> list[Finding]:
                 "The update strategy is OnDelete.",
                 "Delete the pod to roll it.",
             ))
-        if replicas and _partition(spec) == replicas:
+        if strategy == "RollingUpdate" and replicas and _partition(spec) == replicas:
             findings.append(_finding(
                 "rollout-not-started", "info", name,
                 "The rolling update partition equals replicas.",
@@ -181,7 +181,7 @@ def _statefulsets(chain: list[dict], objects: list[dict]) -> list[Finding]:
             findings.append(_finding(
                 "prestop-missing", "info", name,
                 "No container has a preStop hook.",
-                "The grace period is the shutdown check. Add a preStop hook if the client needs one.",
+                "The grace period is the check that matters.",
             ))
     return findings
 
@@ -736,7 +736,7 @@ def _grace(chain: list[dict]) -> list[Finding]:
         profile = _primary(item)
         if profile is None or profile.role == "relay":
             continue
-        seconds = item["pod"].get("terminationGracePeriodSeconds", 30)
+        seconds = _grace_seconds(item["pod"])
         if seconds < profile.grace_seconds:
             findings.append(_finding(
                 "grace-below-floor", "warning", item["name"],
@@ -788,7 +788,7 @@ def _rollouts(chain: list[dict]) -> list[Rollout]:
     for item in chain:
         spec = item["obj"].get("spec") or {}
         strategy = (spec.get("updateStrategy") or {}).get("type") or "RollingUpdate"
-        rows.append(Rollout(item["name"], strategy, _partition(spec) if strategy == "RollingUpdate" else None))
+        rows.append(Rollout(item["name"], strategy, _partition(spec)))
     return rows
 
 
@@ -894,10 +894,28 @@ def _has_prestop(pod: dict) -> bool:
     return any(((container.get("lifecycle") or {}).get("preStop")) for container in pod.get("containers") or [])
 
 
+def _grace_seconds(pod: dict) -> int:
+    seconds = pod.get("terminationGracePeriodSeconds", 30)
+    if isinstance(seconds, bool):
+        return 30
+    if isinstance(seconds, int):
+        return seconds
+    if isinstance(seconds, str) and seconds.isdigit():
+        return int(seconds)
+    return 30
+
+
 def _partition(spec: dict) -> int | None:
+    strategy = (spec.get("updateStrategy") or {}).get("type") or "RollingUpdate"
+    if strategy != "RollingUpdate":
+        return None
     rolling = ((spec.get("updateStrategy") or {}).get("rollingUpdate") or {})
-    partition = rolling.get("partition")
-    return partition if isinstance(partition, int) else None
+    partition = rolling.get("partition", 0)
+    if isinstance(partition, str) and partition.isdigit():
+        return int(partition)
+    if isinstance(partition, int) and not isinstance(partition, bool):
+        return partition
+    return 0
 
 
 def _headless(service: dict) -> bool:
