@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KubeChain — is this Kubernetes blockchain deployment production ready?</title>
+  <meta name="description" content="KubeChain only reads a Kubernetes cluster and reports whether a blockchain workload is production ready." />
+  <link rel="canonical" href="https://ehsanhajian.github.io/kubechain/" />
+  <style>
+    :root {
+      --bg: #f3f1eb;
+      --ink: #1a2330;
+      --muted: #5c6b7a;
+      --line: #d5d0c6;
+      --teal: #0f4c5c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Iowan Old Style", Palatino, Georgia, serif;
+      background: var(--bg);
+    }
+    main { max-width: 40rem; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+    h1 { margin: 0 0 0.75rem; font-size: 2.4rem; letter-spacing: -0.03em; }
+    h2 { margin: 2rem 0 0.5rem; font-size: 1.15rem; }
+    p, li { line-height: 1.55; }
+    .lede { font-size: 1.2rem; }
+    .read { padding: 0.9rem 1rem; border-left: 3px solid var(--teal); background: #faf8f4; }
+    a { color: var(--teal); }
+    code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    pre {
+      overflow-x: auto;
+      padding: 1rem;
+      background: var(--ink);
+      color: #f3f1eb;
+      border-radius: 8px;
+    }
+    footer { margin-top: 2.5rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>KubeChain</h1>
+    <p class="lede">Is my Kubernetes blockchain deployment production ready?</p>
+    <p class="read">KubeChain only reads. A live check uses get, list, and watch. Secret bytes are discarded. Volume snapshots are observed and never created. The cluster is left as it was found. KubeChain does not apply a manifest and does not create a snapshot.</p>
+    <h2>Install</h2>
+    <p>Python 3.11 or newer. <code>kubechain --version</code> prints the release.</p>
+    <pre>pip install kubechain
+kubechain --version
+kubechain check --manifests examples/ready
+kubechain check --namespace nodes</pre>
+    <h2>Verdict</h2>
+    <ul>
+      <li>ready, exit 0. No warning or critical finding.</li>
+      <li>review, exit 1. A warning names a production gap.</li>
+      <li>not-ready, exit 2. A critical finding. Chain data, a secret, or an upgrade would be unsafe.</li>
+    </ul>
+    <p>The full reference is the <a href="https://github.com/ehsanhajian/kubechain#readme">README</a>. The package is on <a href="https://pypi.org/project/kubechain/">PyPI</a>.</p>
+    <footer>MIT. Source: <a href="https://github.com/ehsanhajian/kubechain">github.com/ehsanhajian/kubechain</a></footer>
+  </main>
+</body>
+</html>

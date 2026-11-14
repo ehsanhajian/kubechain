@@ -28,6 +28,13 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Test
         run: pytest
+      - name: Fixtures
+        run: |
+          kubechain --version
+          kubechain check --manifests examples/ready
+          status=0
+          kubechain check --manifests examples/broken || status=$?
+          test "$status" -eq 2
       - name: Build
         if: matrix.python-version == '3.12'
         run: |

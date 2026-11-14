@@ -15,7 +15,7 @@ pip install kubechain
 kubechain --version
 ```
 
-The package is published from a GitHub release to [PyPI](https://pypi.org/project/kubechain/). This README is the reference.
+The package is published from a GitHub release to [PyPI](https://pypi.org/project/kubechain/). The one-page summary is on [GitHub Pages](https://ehsanhajian.github.io/kubechain/). This README is the reference.
 
 ## Commands
 
