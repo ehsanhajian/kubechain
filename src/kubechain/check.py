@@ -770,8 +770,7 @@ def _backup(chain: list[dict], objects: list[dict]) -> list[Finding]:
 def _placement(chain: list[dict]) -> list[Finding]:
     findings = []
     for item in chain:
-        replicas = (item["obj"].get("spec") or {}).get("replicas", 1)
-        if not isinstance(replicas, int) or replicas <= 1:
+        if _replica_count(item["obj"].get("spec") or {}) <= 1:
             continue
         if _spread(item["pod"]):
             continue
@@ -904,18 +903,43 @@ def _claim_labels(selector: dict, labels: dict) -> bool:
     return all(labels.get(key) == value for key, value in match.items())
 
 
+def _replica_count(spec: dict) -> int:
+    replicas = spec.get("replicas", 1)
+    if isinstance(replicas, bool):
+        return 1
+    if isinstance(replicas, int):
+        return replicas
+    if isinstance(replicas, str) and replicas.isdigit():
+        return int(replicas)
+    return 1
+
+
 def _spread(pod: dict) -> bool:
-    affinity = (((pod.get("affinity") or {}).get("podAntiAffinity") or {}))
+    affinity = ((pod.get("affinity") or {}).get("podAntiAffinity") or {})
     terms = list(affinity.get("requiredDuringSchedulingIgnoredDuringExecution") or [])
     terms.extend(affinity.get("preferredDuringSchedulingIgnoredDuringExecution") or [])
     for term in terms:
+        if not isinstance(term, dict):
+            continue
         body = term.get("podAffinityTerm") or term
-        if body.get("topologyKey") == "kubernetes.io/hostname":
+        if isinstance(body, dict) and body.get("topologyKey") == "kubernetes.io/hostname":
             return True
     for constraint in pod.get("topologySpreadConstraints") or []:
-        if constraint.get("maxSkew") == 1:
+        if not isinstance(constraint, dict):
+            continue
+        if constraint.get("topologyKey") == "kubernetes.io/hostname" and _skew(constraint.get("maxSkew")) == 1:
             return True
     return False
+
+
+def _skew(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def _jwt_state(pod: dict, container: dict) -> tuple[list[tuple[str, str]], tuple[str, str] | None]:
