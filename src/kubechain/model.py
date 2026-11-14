@@ -45,7 +45,8 @@ class Report:
     rollouts: list[Rollout]
 
     def __post_init__(self) -> None:
-        self.findings.sort(key=lambda finding: (SEVERITY_ORDER.get(finding.severity, 9), finding.id, finding.target))
+        self.findings = [finding for finding in self.findings if _complete(finding)]
+        self.findings.sort(key=lambda finding: (SEVERITY_ORDER[finding.severity], finding.id, finding.target))
 
     @property
     def verdict(self) -> str:
@@ -69,3 +70,10 @@ class Report:
 
 def exit_code(report: Report) -> int:
     return {"ready": 0, "review": 1, "not-ready": 2}[report.verdict]
+
+
+def _complete(finding: Finding) -> bool:
+    fields = (finding.id, finding.severity, finding.target, finding.reason, finding.action)
+    if not all(isinstance(field, str) and field.strip() for field in fields):
+        return False
+    return finding.severity in SEVERITY_ORDER
