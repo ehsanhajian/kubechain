@@ -83,8 +83,7 @@ def test_report_writes_markdown(tmp_path: Path) -> None:
     result = _run("report", "--manifests", "examples/ready", "--output", str(output), "--json")
     assert result.returncode == 0, result.stderr
     body = output.read_text()
-    assert body.startswith("# KubeChain\n")
-    assert "verdict ready" in body
+    assert body.startswith("verdict ready\n")
     assert json.loads(result.stdout)["verdict"] == "ready"
 
 

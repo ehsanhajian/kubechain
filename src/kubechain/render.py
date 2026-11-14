@@ -35,23 +35,18 @@ def render_json(report: Report) -> str:
 
 def render_markdown(report: Report) -> str:
     lines = [
-        "# KubeChain",
-        "",
         f"verdict {report.verdict}",
         f"namespace {report.namespace}",
         "",
     ]
+    for rollout in report.rollouts:
+        partition = "" if rollout.partition is None else f" partition {rollout.partition}"
+        lines.append(f"rollout {rollout.target} {rollout.strategy}{partition}")
     if report.rollouts:
-        lines.append("## Rollouts")
         lines.append("")
-        for rollout in report.rollouts:
-            partition = "" if rollout.partition is None else f" partition {rollout.partition}"
-            lines.append(f"- {rollout.target} {rollout.strategy}{partition}")
-        lines.append("")
+    for note in report.notes:
+        lines.append(f"note {note}")
     if report.notes:
-        lines.append("## Notes")
-        lines.append("")
-        lines.extend(f"- {note}" for note in report.notes)
         lines.append("")
     for finding in report.findings:
         lines.extend([
