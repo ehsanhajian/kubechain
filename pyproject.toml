@@ -1,6 +1,6 @@
 [project]
 name = "kubechain"
-version = "0.1.0"
+version = "0.2.0"
 description = "Decide whether a blockchain workload on Kubernetes is production ready."
 readme = "README.md"
 license = "MIT"
